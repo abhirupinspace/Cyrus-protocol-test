@@ -2,15 +2,13 @@
 name = "cyrus-protocol"
 version = "1.0.0"
 authors = ["Cyrus Protocol Team"]
+upgrade_policy = "compatible"
 
 [addresses]
 cyrus_protocol = "_"
 std = "0x1"
 aptos_framework = "0x1"
 aptos_std = "0x1"
-
-# Circle USDC on Aptos Testnet
-usdc_address = "0x69091fbab5f7d635ee7ac5098cf0c1efbe31d68fec0f2cd565e8d168daf52832"
 
 [dev-addresses]
 cyrus_protocol = "0x42"
@@ -29,3 +27,5 @@ subdir = "aptos-move/framework/aptos-stdlib"
 git = "https://github.com/aptos-labs/aptos-core.git"
 rev = "mainnet"
 subdir = "aptos-move/framework/move-stdlib"
+
+[dev-dependencies]

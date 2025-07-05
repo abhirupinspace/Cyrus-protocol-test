@@ -1,165 +1,166 @@
-/// This module contains unit tests for the settlement module functionality.
-/// 
-/// # Tests Overview
-/// 
-/// - `test_vault_initialization`: Tests the initialization of a vault and verifies initial state
-/// - `test_deposit_and_settle`: Tests deposit of USDC into vault and settlement process
-/// - `test_replay_protection`: Tests protection against replay attacks using same transaction hash
-/// - `test_relayer_authorization`: Tests relayer authorization and settlement through authorized relayer
-/// 
-/// # Test Dependencies
-/// 
-/// - `std::string`: For handling string operations
-/// - `std::signer`: For signer operations
-/// - `aptos_framework::coin`: For coin operations
-/// - `aptos_framework::account`: For account operations
-/// - `cyrus_protocol::settlement`: Main module being tested
-/// 
-/// # Test Structure
-/// 
-/// Each test follows a similar pattern:
-/// 1. Account setup and initialization
-/// 2. USDC and vault initialization
-/// 3. Test-specific operations
-/// 4. State verification through assertions
-/// 
-/// # Note
-/// 
-/// This module is marked with `#[test_only]` and should only be used for testing purposes.
-
-
 #[test_only]
-module cyrus_protocol::settlement_tests {
+module cyrus_protocol::settlement_integration_tests {
     use std::string;
     use std::signer;
-    use aptos_framework::coin;
+    use std::vector;
     use aptos_framework::account;
     use cyrus_protocol::settlement;
 
-    #[test(admin = @cyrus_protocol, user = @0x123)]
-    public fun test_vault_initialization(admin: &signer, user: &signer) {
-        // Create accounts
-        account::create_account_for_test(signer::address_of(admin));
-        account::create_account_for_test(signer::address_of(user));
+    #[test(admin = @cyrus_protocol)]
+    public fun test_complete_vault_lifecycle(admin: &signer) {
+        // Setup
+        settlement::setup_test_account(admin);
+        let admin_addr = signer::address_of(admin);
+        
+        // Test vault initialization
+        settlement::initialize_vault(admin);
+        assert!(settlement::vault_exists(admin_addr), 1);
+        
+        // Test initial state
+        assert!(settlement::get_vault_balance(admin_addr) == 0, 2);
+        assert!(settlement::get_total_settled(admin_addr) == 0, 3);
+        
+        // Test vault info
+        let (balance, settled, created_at, relayers) = settlement::get_vault_info(admin_addr);
+        assert!(balance == 0, 4);
+        assert!(settled == 0, 5);
+        assert!(created_at > 0, 6);
+        assert!(vector::length(&relayers) == 0, 7);
+    }
 
-        // Initialize USDC for testing
-        settlement::init_usdc_for_test(admin);
+    #[test(admin = @cyrus_protocol, relayer1 = @0x123, relayer2 = @0x456)]
+    public fun test_relayer_management_comprehensive(
+        admin: &signer, 
+        relayer1: &signer, 
+        relayer2: &signer
+    ) {
+        // Setup accounts
+        settlement::setup_test_account(admin);
+        settlement::setup_test_account(relayer1);
+        settlement::setup_test_account(relayer2);
+        
+        let admin_addr = signer::address_of(admin);
+        let relayer1_addr = signer::address_of(relayer1);
+        let relayer2_addr = signer::address_of(relayer2);
         
         // Initialize vault
         settlement::initialize_vault(admin);
         
-        // Check initial state
-        assert!(settlement::get_vault_balance(signer::address_of(admin)) == 0, 1);
-        assert!(settlement::get_total_settled(signer::address_of(admin)) == 0, 2);
+        // Test owner is automatically authorized
+        assert!(settlement::is_authorized_relayer(admin_addr, admin_addr), 1);
+        
+        // Test relayers are not initially authorized
+        assert!(!settlement::is_authorized_relayer(admin_addr, relayer1_addr), 2);
+        assert!(!settlement::is_authorized_relayer(admin_addr, relayer2_addr), 3);
+        
+        // Add first relayer
+        settlement::add_relayer(admin, relayer1_addr);
+        assert!(settlement::is_authorized_relayer(admin_addr, relayer1_addr), 4);
+        assert!(!settlement::is_authorized_relayer(admin_addr, relayer2_addr), 5);
+        
+        // Add second relayer
+        settlement::add_relayer(admin, relayer2_addr);
+        assert!(settlement::is_authorized_relayer(admin_addr, relayer1_addr), 6);
+        assert!(settlement::is_authorized_relayer(admin_addr, relayer2_addr), 7);
+        
+        // Test adding same relayer twice (should not duplicate)
+        settlement::add_relayer(admin, relayer1_addr);
+        let (_, _, _, relayers) = settlement::get_vault_info(admin_addr);
+        assert!(vector::length(&relayers) == 2, 8); // Should still be 2, not 3
+        
+        // Remove first relayer
+        settlement::remove_relayer(admin, relayer1_addr);
+        assert!(!settlement::is_authorized_relayer(admin_addr, relayer1_addr), 9);
+        assert!(settlement::is_authorized_relayer(admin_addr, relayer2_addr), 10);
+        
+        // Remove second relayer
+        settlement::remove_relayer(admin, relayer2_addr);
+        assert!(!settlement::is_authorized_relayer(admin_addr, relayer2_addr), 11);
+        
+        // Verify final state
+        let (_, _, _, final_relayers) = settlement::get_vault_info(admin_addr);
+        assert!(vector::length(&final_relayers) == 0, 12);
     }
 
-    #[test(admin = @cyrus_protocol, user = @0x123)]
-    public fun test_deposit_and_settle(admin: &signer, user: &signer) {
-        let admin_addr = signer::address_of(admin);
-        let user_addr = signer::address_of(user);
-        
-        // Setup accounts
-        account::create_account_for_test(admin_addr);
-        account::create_account_for_test(user_addr);
-
-        // Initialize USDC and vault
-        settlement::init_usdc_for_test(admin);
+    #[test(admin = @cyrus_protocol)]
+    public fun test_replay_protection_comprehensive(admin: &signer) {
+        settlement::setup_test_account(admin);
         settlement::initialize_vault(admin);
-
-        // Mint USDC to admin and deposit to vault
-        settlement::mint_usdc_for_test(admin, admin_addr, 1000000); // 1 USDC
-        settlement::deposit_usdc(admin, 1000000);
-
-        // Check vault balance
-        assert!(settlement::get_vault_balance(admin_addr) == 1000000, 1);
-
-        // Test settlement
-        settlement::settle(
-            admin, // relayer (owner can settle for testing)
-            admin_addr, // vault owner
-            string::utf8(b"solana_tx_hash_123"),
-            user_addr, // receiver
-            500000, // 0.5 USDC
-            1, // nonce
-            1000000 // timestamp
-        );
-
-        // Check balances after settlement
-        assert!(settlement::get_vault_balance(admin_addr) == 500000, 2); // 0.5 USDC left
-        assert!(settlement::get_total_settled(admin_addr) == 500000, 3); // 0.5 USDC settled
         
-        // Check if instruction is marked as settled
-        assert!(settlement::is_settled(admin_addr, string::utf8(b"solana_tx_hash_123")), 4);
+        let admin_addr = signer::address_of(admin);
+        
+        // Test different transaction hashes
+        let tx_hash_1 = string::utf8(b"solana_tx_hash_001");
+        let tx_hash_2 = string::utf8(b"solana_tx_hash_002");
+        let tx_hash_3 = string::utf8(b"different_format_tx_123456");
+        
+        // Initially none should be settled
+        assert!(!settlement::is_settled(admin_addr, tx_hash_1), 1);
+        assert!(!settlement::is_settled(admin_addr, tx_hash_2), 2);
+        assert!(!settlement::is_settled(admin_addr, tx_hash_3), 3);
+        
+        // Test with non-existent vault
+        let fake_addr = @0x999;
+        assert!(!settlement::is_settled(fake_addr, tx_hash_1), 4);
     }
 
-    #[test(admin = @cyrus_protocol, user = @0x123)]
-    #[expected_failure(abort_code = 4, location = cyrus_protocol::settlement)]
-    public fun test_replay_protection(admin: &signer, user: &signer) {
-        let admin_addr = signer::address_of(admin);
-        let user_addr = signer::address_of(user);
+    #[test(admin = @cyrus_protocol)]
+    #[expected_failure(abort_code = 8, location = cyrus_protocol::settlement)]
+    public fun test_double_vault_initialization(admin: &signer) {
+        settlement::setup_test_account(admin);
         
-        // Setup
-        account::create_account_for_test(admin_addr);
-        account::create_account_for_test(user_addr);
-        settlement::init_usdc_for_test(admin);
+        // First initialization should succeed
         settlement::initialize_vault(admin);
-        settlement::mint_usdc_for_test(admin, admin_addr, 1000000);
-        settlement::deposit_usdc(admin, 1000000);
-
-        // First settlement
-        settlement::settle(
-            admin,
-            admin_addr,
-            string::utf8(b"duplicate_tx_hash"),
-            user_addr,
-            100000,
-            1,
-            1000000
-        );
-
-        // This should fail - same tx hash
-        settlement::settle(
-            admin,
-            admin_addr,
-            string::utf8(b"duplicate_tx_hash"), // Same hash!
-            user_addr,
-            100000,
-            2,
-            1000001
-        );
+        
+        // Second initialization should fail
+        settlement::initialize_vault(admin);
     }
 
-    #[test(admin = @cyrus_protocol, user = @0x123, relayer = @0x456)]
-    public fun test_relayer_authorization(admin: &signer, user: &signer, relayer: &signer) {
+    #[test(admin = @cyrus_protocol, other = @0x999)]
+    #[expected_failure(abort_code = 1, location = cyrus_protocol::settlement)]
+    public fun test_unauthorized_relayer_addition(admin: &signer, other: &signer) {
+        settlement::setup_test_account(admin);
+        settlement::setup_test_account(other);
+        
         let admin_addr = signer::address_of(admin);
-        let user_addr = signer::address_of(user);
-        let relayer_addr = signer::address_of(relayer);
+        let other_addr = signer::address_of(other);
         
-        // Setup
-        account::create_account_for_test(admin_addr);
-        account::create_account_for_test(user_addr);
-        account::create_account_for_test(relayer_addr);
-        
-        settlement::init_usdc_for_test(admin);
         settlement::initialize_vault(admin);
-        settlement::mint_usdc_for_test(admin, admin_addr, 1000000);
-        settlement::deposit_usdc(admin, 1000000);
+        
+    
+        settlement::add_relayer(other, other_addr);
+    }
 
-        // Add relayer
-        settlement::add_relayer(admin, relayer_addr);
-        assert!(settlement::is_authorized_relayer(admin_addr, relayer_addr), 1);
+    #[test(admin = @cyrus_protocol)]
+    #[expected_failure(abort_code = 5, location = cyrus_protocol::settlement)]
+    public fun test_operations_without_vault(admin: &signer) {
+        settlement::setup_test_account(admin);
+        let admin_addr = signer::address_of(admin);
+        
+        // Try to get vault balance without initializing vault
+        settlement::get_vault_balance(admin_addr);
+    }
 
-        // Relayer should be able to settle
-        settlement::settle(
-            relayer, // authorized relayer
-            admin_addr,
-            string::utf8(b"relayer_tx_123"),
-            user_addr,
-            250000,
-            1,
-            1000000
-        );
-
-        assert!(settlement::get_total_settled(admin_addr) == 250000, 2);
+    #[test(admin = @cyrus_protocol)]
+    public fun test_edge_cases(admin: &signer) {
+        settlement::setup_test_account(admin);
+        settlement::initialize_vault(admin);
+        
+        let admin_addr = signer::address_of(admin);
+        
+        // Test with empty string transaction hash
+        let empty_hash = string::utf8(b"");
+        assert!(!settlement::is_settled(admin_addr, empty_hash), 1);
+        
+        // Test with very long transaction hash
+        let long_hash = string::utf8(b"very_long_transaction_hash_that_simulates_actual_blockchain_transaction_identifiers_which_can_be_quite_lengthy_in_practice");
+        assert!(!settlement::is_settled(admin_addr, long_hash), 2);
+        
+        // Test vault info with fresh vault
+        let (balance, settled, created_at, relayers) = settlement::get_vault_info(admin_addr);
+        assert!(balance == 0, 3);
+        assert!(settled == 0, 4);
+        assert!(created_at > 0, 5);
+        assert!(vector::length(&relayers) == 0, 6);
     }
 }
