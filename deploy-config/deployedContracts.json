@@ -1,0 +1,19 @@
+{
+  "solana": {
+    "CyrusSettlementEmitter": "",
+    "deployedAt": "",
+    "network": "devnet",
+    "programVersion": "1.0.0"
+  },
+  "aptos": {
+    "SettlementProcessor": "",
+    "VaultOwner": "",
+    "deployedAt": "",
+    "network": "testnet",
+    "contractVersion": "1.0.0"
+  },
+  "relayer": {
+    "authorizedRelayers": [],
+    "configVersion": "1.0.0"
+  }
+}

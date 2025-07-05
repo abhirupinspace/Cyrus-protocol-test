@@ -1,0 +1,29 @@
+[general]
+log_level = "info"
+metrics_enabled = true
+health_check_port = 8080
+
+[solana]
+rpc_url = "https://api.devnet.solana.com"
+commitment = "confirmed"
+program_id = ""
+poll_interval_ms = 1000
+
+[aptos]
+rpc_url = "https://fullnode.testnet.aptoslabs.com/v1"
+contract_address = ""
+vault_owner = ""
+max_gas_amount = 200000
+gas_unit_price = 100
+
+[processing]
+max_concurrent_settlements = 10
+batch_size = 5
+retry_attempts = 3
+retry_delay_seconds = 5
+
+[monitoring]
+enable_metrics = true
+metrics_port = 9090
+dashboard_enabled = true
+alert_webhook_url = ""

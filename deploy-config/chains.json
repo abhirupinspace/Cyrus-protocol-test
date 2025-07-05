@@ -1,0 +1,32 @@
+{
+  "chains": [
+    {
+      "name": "solana-devnet",
+      "chainId": "solana",
+      "rpc": "https://api.devnet.solana.com",
+      "networkType": "devnet",
+      "programId": "",
+      "gasSettings": {
+        "maxRetries": 3,
+        "commitment": "confirmed"
+      }
+    },
+    {
+      "name": "aptos-testnet",
+      "chainId": "aptos", 
+      "rpc": "https://fullnode.testnet.aptoslabs.com/v1",
+      "networkType": "testnet",
+      "contractAddress": "",
+      "gasSettings": {
+        "maxGasAmount": 200000,
+        "gasUnitPrice": 100
+      }
+    }
+  ],
+  "relayer": {
+    "maxRetries": 3,
+    "retryDelaySeconds": 5,
+    "batchSize": 10,
+    "healthCheckInterval": 30
+  }
+}

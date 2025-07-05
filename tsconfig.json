@@ -1,0 +1,27 @@
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "commonjs",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "outDir": "dist",
+    "rootDir": "./",
+    "resolveJsonModule": true,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true
+  },
+  "include": [
+    "scripts/**/*.ts",
+    "tests/**/*.ts",
+    "monitoring/**/*.ts",
+    "sdk/**/*.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "contracts/solana/node_modules",
+    "contracts/solana/target"
+  ]
+}

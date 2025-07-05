@@ -1,11 +1,20 @@
 # Dependencies
 node_modules/
+dist/
+
+# Build outputs
 target/
 build/
+out/
+
+# Logs
+logs/
+*.log
 
 # Environment files
 .env
 .env.local
+.env.production
 
 # IDE
 .vscode/
@@ -17,12 +26,20 @@ build/
 .DS_Store
 Thumbs.db
 
-# Anchor
+# Solana
 .anchor/
+programs/target/
 
 # Aptos
 .aptos/
 
-# Logs
-*.log
-logs/
+# Relayer logs
+relayer/logs/*.log
+
+# Testing
+coverage/
+.nyc_output/
+
+# Temporary files
+tmp/
+temp/
