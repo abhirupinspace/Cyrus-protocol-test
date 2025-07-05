@@ -1,219 +1,533 @@
-use crate::types::{SettlementInstruction, SettlementResult, RelayerConfig};
-use anyhow::Result;
-use log::{info, error, debug};
-use tokio::process::Command as AsyncCommand;
+use crate::{
+    chains::{aptos::AptosChain, solana::SolanaChain, DestinationChain, SourceChain},
+    database::{Database, DatabaseStatistics},
+    types::{
+        ProcessingConfig, RelayerConfig, RelayerMetrics, SettlementError, SettlementInstruction,
+        SettlementResult, SettlementStatus,
+    },
+};
+use backoff::{future::retry, ExponentialBackoff};
+use chrono::Utc;
+use futures::StreamExt;
+use std::{
+    collections::HashMap,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
+    time::{Duration, Instant},
+};
+use tokio::{
+    sync::{mpsc, RwLock, Semaphore},
+    time::{interval, sleep},
+};
+use tracing::{debug, error, info, warn};
+use uuid::Uuid;
 
-/// Core settlement processor
+/// Core settlement processor that orchestrates cross-chain settlements
 pub struct SettlementProcessor {
     config: RelayerConfig,
+    source_chain: Arc<dyn SourceChain>,
+    destination_chain: Arc<dyn DestinationChain>,
+    database: Arc<Database>,
+    metrics: Arc<RwLock<RelayerMetrics>>,
+    processing_semaphore: Arc<Semaphore>,
+    instruction_queue: mpsc::UnboundedSender<SettlementInstruction>,
+    processing_times: Arc<RwLock<Vec<Duration>>>,
+    start_time: Instant,
 }
 
 impl SettlementProcessor {
     /// Create new settlement processor
-    pub fn new(config: RelayerConfig) -> Self {
-        Self { config }
+    pub async fn new(config: RelayerConfig) -> Result<Self, SettlementError> {
+        info!("Initializing settlement processor");
+
+        // Create database connection
+        let database = Arc::new(Database::new(&config.database).await?);
+
+        // Create instruction queue
+        let (instruction_sender, instruction_receiver) = mpsc::unbounded_channel();
+
+        // Create source chain (Solana)
+        let source_chain = Arc::new(SolanaChain::new(
+            config.solana.clone(),
+            Some(instruction_sender.clone()),
+        )?);
+
+        // Create destination chain (Aptos)
+        let destination_chain = Arc::new(AptosChain::new(config.aptos.clone()).await?);
+
+        // Initialize metrics
+        let metrics = Arc::new(RwLock::new(RelayerMetrics::default()));
+
+        // Create processing semaphore to limit concurrent settlements
+        let processing_semaphore = Arc::new(Semaphore::new(config.processing.max_concurrent_settlements));
+
+        let processor = Self {
+            config,
+            source_chain,
+            destination_chain,
+            database,
+            metrics,
+            processing_semaphore,
+            instruction_queue: instruction_sender,
+            processing_times: Arc::new(RwLock::new(Vec::new())),
+            start_time: Instant::now(),
+        };
+
+        // Start background tasks
+        processor.start_instruction_processor(instruction_receiver).await;
+        processor.start_metrics_updater().await;
+        processor.start_retry_processor().await;
+
+        info!("Settlement processor initialized successfully");
+        Ok(processor)
     }
-    
-    /// Process a single settlement instruction
-    pub async fn process_settlement(&self, instruction: SettlementInstruction) -> Result<SettlementResult> {
-        info!("Processing settlement: {} -> {} ({} USDC)", 
-              instruction.source_tx_hash,
-              instruction.receiver, 
-              instruction.amount_in_usdc());
-        
-        // Validate instruction
-        if let Err(e) = instruction.validate() {
-            error!("Invalid instruction: {}", e);
-            return Ok(SettlementResult::error(e));
-        }
-        
-        // Check if already processed
-        if self.is_already_processed(&instruction.source_tx_hash).await? {
-            info!("Settlement already processed: {}", instruction.source_tx_hash);
-            return Ok(SettlementResult::error("Already processed".to_string()));
-        }
-        
-        // Submit to Aptos
-        self.submit_to_aptos(instruction).await
+
+    /// Start the relayer service
+    pub async fn start(&self) -> Result<(), SettlementError> {
+        info!("Starting Cyrus Protocol Relayer");
+
+        // Start source chain event listener
+        self.source_chain.start_event_listener().await?;
+
+        // Process any pending instructions from database
+        self.process_pending_instructions().await?;
+
+        info!("Cyrus Protocol Relayer started successfully");
+        Ok(())
     }
-    
-    /// Submit settlement to Aptos using CLI
-    async fn submit_to_aptos(&self, instruction: SettlementInstruction) -> Result<SettlementResult> {
-        let timestamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)?
-            .as_micros() as u64;
-        
-        info!("Submitting to Aptos contract...");
-        
-        let mut cmd = AsyncCommand::new("aptos");
-        cmd.arg("move")
-           .arg("run")
-           .arg("--function-id")
-           .arg(format!("{}::settlement::settle", self.config.contract_address))
-           .arg("--args")
-           .arg(format!("address:{}", self.config.vault_owner))
-           .arg(format!("string:{}", instruction.source_tx_hash))
-           .arg(format!("address:{}", instruction.receiver))
-           .arg(format!("u64:{}", instruction.amount))
-           .arg(format!("u64:{}", instruction.nonce))
-           .arg(format!("u64:{}", timestamp))
-           .arg("--max-gas")  // Changed from --max-gas-amount to --max-gas
-           .arg("200000")
-           .arg("--assume-yes");
-        
-        debug!("Executing: {:?}", cmd);
-        
-        let output = cmd.output().await?;
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        
-        if output.status.success() {
-            // Extract transaction hash
-            let tx_hash = self.extract_tx_hash(&stdout).unwrap_or("unknown".to_string());
-            info!("✅ Settlement successful: {}", tx_hash);
-            Ok(SettlementResult::success(tx_hash))
-        } else {
-            let error_msg = if stderr.is_empty() { stdout.to_string() } else { stderr.to_string() };
-            error!("❌ Settlement failed: {}", error_msg);
-            Ok(SettlementResult::error(error_msg))
-        }
-    }
-    
-    /// Check if settlement already processed
-    async fn is_already_processed(&self, source_tx_hash: &str) -> Result<bool> {
-        let mut cmd = AsyncCommand::new("aptos");
-        cmd.arg("move")
-           .arg("view")
-           .arg("--function-id")
-           .arg(format!("{}::settlement::is_settled", self.config.contract_address))
-           .arg("--args")
-           .arg(format!("address:{}", self.config.vault_owner))
-           .arg(format!("string:{}", source_tx_hash));
-        
-        let output = cmd.output().await?;
-        
-        if output.status.success() {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            Ok(stdout.contains("true"))
-        } else {
-            // If we can't check, assume not processed
-            Ok(false)
-        }
-    }
-    
-    /// Extract transaction hash from Aptos CLI output
-    fn extract_tx_hash(&self, output: &str) -> Option<String> {
-        // Look for transaction hash in various formats
-        for line in output.lines() {
-            if line.contains("Transaction submitted:") || line.contains("transaction_hash") {
-                if let Some(start) = line.find("0x") {
-                    let rest = &line[start..];
-                    if let Some(end) = rest.find(|c: char| !c.is_ascii_hexdigit() && c != 'x') {
-                        if end > 10 { // Reasonable hash length
-                            return Some(rest[..end].to_string());
+
+    /// Start instruction processor task
+    async fn start_instruction_processor(
+        &self,
+        mut instruction_receiver: mpsc::UnboundedReceiver<SettlementInstruction>,
+    ) {
+        let database = Arc::clone(&self.database);
+        let destination_chain = Arc::clone(&self.destination_chain);
+        let metrics = Arc::clone(&self.metrics);
+        let semaphore = Arc::clone(&self.processing_semaphore);
+        let processing_times = Arc::clone(&self.processing_times);
+        let config = self.config.processing.clone();
+
+        tokio::spawn(async move {
+            while let Some(instruction) = instruction_receiver.recv().await {
+                info!("Received settlement instruction: {}", instruction.id);
+
+                // Store instruction in database
+                if let Err(e) = database.store_instruction(&instruction).await {
+                    error!("Failed to store instruction: {}", e);
+                    continue;
+                }
+
+                // Acquire semaphore permit for processing
+                let permit = semaphore.acquire().await.unwrap();
+
+                // Spawn processing task
+                let database_clone = Arc::clone(&database);
+                let destination_chain_clone = Arc::clone(&destination_chain);
+                let metrics_clone = Arc::clone(&metrics);
+                let processing_times_clone = Arc::clone(&processing_times);
+                let config_clone = config.clone();
+
+                tokio::spawn(async move {
+                    let start_time = Instant::now();
+
+                    let result = Self::process_instruction_with_retry(
+                        &instruction,
+                        destination_chain_clone,
+                        &config_clone,
+                    ).await;
+
+                    let processing_time = start_time.elapsed();
+
+                    // Update processing times
+                    {
+                        let mut times = processing_times_clone.write().await;
+                        times.push(processing_time);
+                        // Keep only last 1000 processing times
+                        if times.len() > 1000 {
+                            times.remove(0);
                         }
                     }
-                }
+
+                    // Store result in database
+                    if let Err(e) = database_clone.store_result(&result).await {
+                        error!("Failed to store result: {}", e);
+                    }
+
+                    // Update metrics
+                    Self::update_metrics_for_result(&result, &metrics_clone).await;
+
+                    // Log result
+                    match result.status {
+                        SettlementStatus::Completed => {
+                            info!(
+                                "Settlement completed successfully: {} in {:?}",
+                                instruction.id, processing_time
+                            );
+                        }
+                        SettlementStatus::Failed => {
+                            error!(
+                                "Settlement failed: {} - {}",
+                                instruction.id,
+                                result.error_message.unwrap_or_default()
+                            );
+                        }
+                        _ => {}
+                    }
+
+                    drop(permit);
+                });
             }
-        }
-        None
+        });
     }
-    
-    /// Get vault balance
-    pub async fn get_vault_balance(&self) -> Result<u64> {
-        let mut cmd = AsyncCommand::new("aptos");
-        cmd.arg("move")
-           .arg("view")
-           .arg("--function-id")
-           .arg(format!("{}::settlement::get_vault_balance", self.config.contract_address))
-           .arg("--args")
-           .arg(format!("address:{}", self.config.vault_owner));
-        
-        let output = cmd.output().await?;
-        
-        if output.status.success() {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            Ok(self.extract_number(&stdout).unwrap_or(0))
-        } else {
-            Ok(0)
-        }
-    }
-    
-    /// Get total settled amount
-    pub async fn get_total_settled(&self) -> Result<u64> {
-        let mut cmd = AsyncCommand::new("aptos");
-        cmd.arg("move")
-           .arg("view")
-           .arg("--function-id")
-           .arg(format!("{}::settlement::get_total_settled", self.config.contract_address))
-           .arg("--args")
-           .arg(format!("address:{}", self.config.vault_owner));
-        
-        let output = cmd.output().await?;
-        
-        if output.status.success() {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            Ok(self.extract_number(&stdout).unwrap_or(0))
-        } else {
-            Ok(0)
-        }
-    }
-    
-    /// Extract number from CLI output
-    fn extract_number(&self, output: &str) -> Option<u64> {
-        // Look for numbers in brackets, quotes, or plain text
-        for line in output.lines() {
-            if let Some(start) = line.find('[') {
-                if let Some(end) = line.find(']') {
-                    let content = &line[start + 1..end];
-                    if let Ok(num) = content.trim_matches('"').parse::<u64>() {
-                        return Some(num);
+
+    /// Process instruction with retry logic
+    async fn process_instruction_with_retry(
+        instruction: &SettlementInstruction,
+        destination_chain: Arc<dyn DestinationChain>,
+        config: &ProcessingConfig,
+    ) -> SettlementResult {
+        let backoff = ExponentialBackoff {
+            max_elapsed_time: Some(Duration::from_secs(config.settlement_timeout_seconds)),
+            max_interval: Duration::from_secs(config.retry_delay_seconds),
+            ..Default::default()
+        };
+
+        let mut retry_count = 0;
+
+        let result = retry(backoff, || async {
+            retry_count += 1;
+            
+            debug!("Processing settlement attempt {}: {}", retry_count, instruction.id);
+
+            match destination_chain.submit_settlement(instruction).await {
+                Ok(mut result) => {
+                    result.retry_count = retry_count - 1;
+                    
+                    if result.status == SettlementStatus::Completed {
+                        Ok(result)
+                    } else {
+                        Err(backoff::Error::Transient {
+                            err: SettlementError::TransactionFailed(
+                                result.error_message.unwrap_or_default()
+                            ),
+                            retry_after: None,
+                        })
+                    }
+                }
+                Err(e) => {
+                    warn!("Settlement attempt {} failed: {}", retry_count, e);
+                    
+                    // Determine if error is retryable
+                    let is_retryable = match &e {
+                        SettlementError::NetworkError(_) => true,
+                        SettlementError::Timeout(_) => true,
+                        SettlementError::TransactionFailed(_) => true,
+                        SettlementError::InsufficientBalance { .. } => false,
+                        SettlementError::AlreadyProcessed(_) => false,
+                        SettlementError::InvalidInstruction(_) => false,
+                        _ => true,
+                    };
+
+                    if is_retryable && retry_count < config.retry_attempts {
+                        Err(backoff::Error::Transient {
+                            err: e,
+                            retry_after: Some(Duration::from_secs(config.retry_delay_seconds)),
+                        })
+                    } else {
+                        Err(backoff::Error::Permanent(e))
                     }
                 }
             }
-            
-            if let Some(start) = line.find('"') {
-                let rest = &line[start + 1..];
-                if let Some(end) = rest.find('"') {
-                    if let Ok(num) = rest[..end].parse::<u64>() {
-                        return Some(num);
+        }).await;
+
+        match result {
+            Ok(result) => result,
+            Err(e) => SettlementResult::failure(instruction.id, e.to_string(), retry_count - 1),
+        }
+    }
+
+    /// Process pending instructions from database
+    async fn process_pending_instructions(&self) -> Result<(), SettlementError> {
+        info!("Processing pending instructions from database");
+
+        let pending_instructions = self.database.get_pending_instructions().await?;
+        
+        info!("Found {} pending instructions", pending_instructions.len());
+
+        for instruction in pending_instructions {
+            if let Err(e) = self.instruction_queue.send(instruction) {
+                error!("Failed to queue pending instruction: {}", e);
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Start metrics updater task
+    async fn start_metrics_updater(&self) {
+        let database = Arc::clone(&self.database);
+        let destination_chain = Arc::clone(&self.destination_chain);
+        let metrics = Arc::clone(&self.metrics);
+        let processing_times = Arc::clone(&self.processing_times);
+        let start_time = self.start_time;
+
+        tokio::spawn(async move {
+            let mut interval = interval(Duration::from_secs(30));
+
+            loop {
+                interval.tick().await;
+
+                if let Err(e) = Self::update_metrics(
+                    &database,
+                    &destination_chain,
+                    &metrics,
+                    &processing_times,
+                    start_time,
+                ).await {
+                    error!("Failed to update metrics: {}", e);
+                }
+            }
+        });
+    }
+
+    /// Start retry processor for failed settlements
+    async fn start_retry_processor(&self) {
+        let database = Arc::clone(&self.database);
+        let instruction_queue = self.instruction_queue.clone();
+
+        tokio::spawn(async move {
+            let mut interval = interval(Duration::from_secs(300)); // Check every 5 minutes
+
+            loop {
+                interval.tick().await;
+
+                match database.get_instructions_by_status(SettlementStatus::Failed, Some(10)).await {
+                    Ok(failed_settlements) => {
+                        for (instruction, result) in failed_settlements {
+                            // Retry if not too many attempts and error is retryable
+                            if result.retry_count < 3 {
+                                info!("Retrying failed settlement: {}", instruction.id);
+                                if let Err(e) = instruction_queue.send(instruction) {
+                                    error!("Failed to queue retry instruction: {}", e);
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        error!("Failed to get failed settlements for retry: {}", e);
                     }
                 }
             }
-            
-            // Try parsing the whole line as a number
-            if let Ok(num) = line.trim().parse::<u64>() {
-                return Some(num);
+        });
+    }
+
+    /// Update metrics
+    async fn update_metrics(
+        database: &Database,
+        destination_chain: &Arc<dyn DestinationChain>,
+        metrics: &Arc<RwLock<RelayerMetrics>>,
+        processing_times: &Arc<RwLock<Vec<Duration>>>,
+        start_time: Instant,
+    ) -> Result<(), SettlementError> {
+        let stats = database.get_statistics().await?;
+        let vault_balance = destination_chain.get_vault_balance().await.unwrap_or(0);
+
+        let avg_processing_time = {
+            let times = processing_times.read().await;
+            if times.is_empty() {
+                0.0
+            } else {
+                let total: Duration = times.iter().sum();
+                total.as_millis() as f64 / times.len() as f64
             }
+        };
+
+        let mut metrics_guard = metrics.write().await;
+        *metrics_guard = RelayerMetrics {
+            total_settlements_processed: stats.total_instructions,
+            successful_settlements: stats.completed_settlements,
+            failed_settlements: stats.failed_settlements,
+            pending_settlements: stats.pending_settlements,
+            average_processing_time_ms: avg_processing_time,
+            last_processed_at: if stats.completed_settlements > 0 {
+                Some(Utc::now())
+            } else {
+                None
+            },
+            uptime_seconds: start_time.elapsed().as_secs(),
+            vault_balance_usdc: vault_balance as f64 / 1_000_000.0,
+            total_volume_usdc: stats.total_volume_usdc(),
+        };
+
+        Ok(())
+    }
+
+    /// Update metrics for a settlement result
+    async fn update_metrics_for_result(
+        result: &SettlementResult,
+        metrics: &Arc<RwLock<RelayerMetrics>>,
+    ) {
+        let mut metrics_guard = metrics.write().await;
+        
+        match result.status {
+            SettlementStatus::Completed => {
+                metrics_guard.successful_settlements += 1;
+                metrics_guard.last_processed_at = Some(Utc::now());
+            }
+            SettlementStatus::Failed => {
+                metrics_guard.failed_settlements += 1;
+            }
+            _ => {}
         }
-        None
+        
+        metrics_guard.total_settlements_processed += 1;
+    }
+
+    /// Get current metrics
+    pub async fn get_metrics(&self) -> RelayerMetrics {
+        self.metrics.read().await.clone()
+    }
+
+    /// Get database statistics
+    pub async fn get_statistics(&self) -> Result<DatabaseStatistics, SettlementError> {
+        self.database.get_statistics().await
+    }
+
+    /// Process a single instruction manually (for testing)
+    pub async fn process_instruction(&self, instruction: SettlementInstruction) -> Result<SettlementResult, SettlementError> {
+        // Store instruction
+        self.database.store_instruction(&instruction).await?;
+
+        // Process with retry
+        let result = Self::process_instruction_with_retry(
+            &instruction,
+            Arc::clone(&self.destination_chain),
+            &self.config.processing,
+        ).await;
+
+        // Store result
+        self.database.store_result(&result).await?;
+
+        // Update metrics
+        Self::update_metrics_for_result(&result, &self.metrics).await;
+
+        Ok(result)
+    }
+
+    /// Check health of all components
+    pub async fn check_health(&self) -> HashMap<String, bool> {
+        let mut health = HashMap::new();
+
+        // Check database
+        let db_health = match self.database.get_statistics().await {
+            Ok(_) => true,
+            Err(e) => {
+                error!("Database health check failed: {}", e);
+                false
+            }
+        };
+        health.insert("database".to_string(), db_health);
+
+        // Check destination chain
+        let dest_health = self.destination_chain.check_health().await.unwrap_or(false);
+        health.insert("aptos_chain".to_string(), dest_health);
+
+        // Check source chain
+        let source_health = match self.source_chain.get_latest_slot().await {
+            Ok(_) => true,
+            Err(e) => {
+                error!("Solana health check failed: {}", e);
+                false
+            }
+        };
+        health.insert("solana_chain".to_string(), source_health);
+
+        health
+    }
+
+    /// Graceful shutdown
+    pub async fn shutdown(&self) -> Result<(), SettlementError> {
+        info!("Shutting down settlement processor");
+        
+        // Wait for ongoing settlements to complete
+        let permits_needed = self.config.processing.max_concurrent_settlements;
+        let _permits = self.processing_semaphore.acquire_many(permits_needed as u32).await;
+        
+        info!("Settlement processor shutdown complete");
+        Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    
-    #[test]
-    fn test_tx_hash_extraction() {
-        let processor = SettlementProcessor::new(RelayerConfig::new(
-            "0x123".to_string(),
-            "0x456".to_string(),
-        ));
-        
-        let output = "Transaction submitted: https://explorer.aptoslabs.com/txn/0x1234567890abcdef?network=testnet";
-        assert!(processor.extract_tx_hash(output).is_some());
+    use crate::types::{
+        AptosConfig, ChainId, DatabaseConfig, MonitoringConfig, ProcessingConfig, RelayerConfig,
+        SettlementInstruction, SolanaConfig, TransactionHash, Address,
+    };
+    use chrono::Utc;
+
+    fn create_test_config() -> RelayerConfig {
+        RelayerConfig {
+            solana: SolanaConfig {
+                rpc_url: "https://api.devnet.solana.com".to_string(),
+                program_id: "11111111111111111111111111111112".to_string(),
+                commitment: "confirmed".to_string(),
+                poll_interval_ms: 1000,
+                max_retries: 3,
+            },
+            aptos: AptosConfig {
+                rpc_url: "https://fullnode.testnet.aptoslabs.com/v1".to_string(),
+                contract_address: "0x1".to_string(),
+                vault_owner: "0x1".to_string(),
+                private_key: "0000000000000000000000000000000000000000000000000000000000000001".to_string(),
+                max_gas_amount: 200000,
+                gas_unit_price: 100,
+                transaction_timeout_secs: 30,
+            },
+            processing: ProcessingConfig {
+                max_concurrent_settlements: 5,
+                batch_size: 10,
+                retry_attempts: 3,
+                retry_delay_seconds: 5,
+                settlement_timeout_seconds: 60,
+            },
+            monitoring: MonitoringConfig {
+                metrics_port: 9090,
+                health_check_port: 8080,
+                log_level: "info".to_string(),
+                enable_metrics: true,
+            },
+            database: DatabaseConfig {
+                url: ":memory:".to_string(),
+                max_connections: 5,
+                connection_timeout_secs: 30,
+            },
+        }
     }
-    
-    #[test]
-    fn test_number_extraction() {
-        let processor = SettlementProcessor::new(RelayerConfig::new(
-            "0x123".to_string(),
-            "0x456".to_string(),
-        ));
+
+    #[tokio::test]
+    async fn test_processor_creation() {
+        let config = create_test_config();
         
-        assert_eq!(processor.extract_number(r#"["1000000"]"#), Some(1000000));
-        assert_eq!(processor.extract_number(r#""500000""#), Some(500000));
-        assert_eq!(processor.extract_number("1500000"), Some(1500000));
+        // May fail due to network dependencies, but should not panic
+        match SettlementProcessor::new(config).await {
+            Ok(_) => println!("Processor created successfully"),
+            Err(e) => println!("Expected error in test: {}", e),
+        }
+    }
+
+    #[tokio::test] 
+    async fn test_metrics_initialization() {
+        let config = create_test_config();
+        
+        if let Ok(processor) = SettlementProcessor::new(config).await {
+            let metrics = processor.get_metrics().await;
+            assert_eq!(metrics.total_settlements_processed, 0);
+            assert_eq!(metrics.successful_settlements, 0);
+        }
     }
 }

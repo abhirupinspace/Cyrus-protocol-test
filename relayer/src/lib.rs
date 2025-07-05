@@ -34,11 +34,11 @@
 //! ```
 
 mod types;
-mod settlement_processor;
+mod processor;
 
 // Re-export public API
 pub use types::{SettlementInstruction, SettlementResult, RelayerConfig};
-pub use settlement_processor::SettlementProcessor;
+pub use processor::SettlementProcessor;
 
 // Convenience functions
 

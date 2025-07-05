@@ -50,7 +50,7 @@ async fn main() -> Result<()> {
         Err(e) => error!("   Could not get total settled: {}", e),
     }
     
-    // Example settlement - YOU CAN MODIFY THIS
+    
     info!("");
     info!("Processing Example Settlement:");
     
