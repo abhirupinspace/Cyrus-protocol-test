@@ -1,5 +1,41 @@
+/// This module implements a cross-chain settlement system for USDC transfers from Solana to Aptos.
+/// It provides functionality for secure, one-way token transfers with replay protection and
+/// proper authorization controls.
+///
+/// # Features
+/// * Vault system for holding USDC tokens
+/// * Authorized relayer management
+/// * Settlement instruction processing with replay protection
+/// * Event emission for settlements
+/// * Emergency withdrawal capabilities
+/// * Monitoring and view functions
+///
+/// # Resource Types
+/// * `USDC` - Token type representing Circle's USDC on Aptos
+/// * `Vault` - Main resource holding USDC balance and settlement state
+/// * `SettlementInstruction` - Structure defining cross-chain transfer details
+/// * `SettlementEvent` - Event emitted upon successful settlement
+///
+/// # Role-Based Access Control
+/// * Owner - Can initialize vault, deposit/withdraw USDC, and manage relayers
+/// * Relayers - Authorized addresses that can submit settlement instructions
+/// * Users - Can receive USDC through settlements
+///
+/// # Error Codes
+/// * `E_NOT_OWNER` (1) - Operation requires vault owner authorization
+/// * `E_INSUFFICIENT_BALANCE` (2) - Vault has insufficient USDC balance
+/// * `E_INVALID_INSTRUCTION` (3) - Settlement instruction is malformed
+/// * `E_ALREADY_SETTLED` (4) - Transaction has already been processed
+/// * `E_VAULT_NOT_INITIALIZED` (5) - Vault resource doesn't exist
+/// * `E_UNAUTHORIZED_RELAYER` (6) - Caller is not an authorized relayer
+///
+/// # Testing
+/// Includes test-only functions for initializing and minting test USDC tokens
+ 
+
+
 module cyrus_protocol::settlement {
-    use std::string::{Self, String};
+    use std::string::String;
     use std::signer;
     use std::error;
     use std::vector;
@@ -98,7 +134,7 @@ module cyrus_protocol::settlement {
         source_tx_hash: String,
         receiver: address,
         amount: u64,
-        nonce: u64,
+        _nonce: u64,
         source_timestamp: u64
     ) acquires Vault {
         let relayer_addr = signer::address_of(relayer);
@@ -118,7 +154,7 @@ module cyrus_protocol::settlement {
         // Validate instruction
         assert!(amount > 0, error::invalid_argument(E_INVALID_INSTRUCTION));
         assert!(coin::value(&vault.usdc_balance) >= amount, 
-                error::insufficient_funds(E_INSUFFICIENT_BALANCE));
+                error::invalid_state(E_INSUFFICIENT_BALANCE));
 
         // Mark instruction as processed
         table::add(&mut vault.processed_instructions, source_tx_hash, true);
@@ -187,6 +223,8 @@ module cyrus_protocol::settlement {
 
     #[test_only]
     use aptos_framework::coin::MintCapability;
+    #[test_only]
+    use std::string;
     
     #[test_only]
     struct TestCapabilities has key {
