@@ -1,0 +1,28 @@
+# Dependencies
+node_modules/
+target/
+build/
+
+# Environment files
+.env
+.env.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Anchor
+.anchor/
+
+# Aptos
+.aptos/
+
+# Logs
+*.log
+logs/
