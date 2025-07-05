@@ -1,0 +1,15 @@
+{
+    "protocol_version": "1.0",
+    "intent_type": "settlement",
+    "from_chain": "solana",
+    "to_chain": "aptos",
+    "sender": "Fz3SaWfE...",
+    "receiver": "0xabc123...",
+    "asset": "USDC",
+    "amount": "1000000",
+    "nonce": 42,
+    "timestamp": 1720123400,
+    "expiry": 1720126400,
+    "signature": "base58-encoded-signature"
+  }
+  

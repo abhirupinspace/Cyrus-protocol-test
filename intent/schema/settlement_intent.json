@@ -1,0 +1,24 @@
+{
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "SettlementIntent",
+    "type": "object",
+    "properties": {
+      "protocol_version": { "type": "string" },
+      "intent_type": { "type": "string", "enum": ["settlement"] },
+      "from_chain": { "type": "string" },
+      "to_chain": { "type": "string" },
+      "sender": { "type": "string" },
+      "receiver": { "type": "string" },
+      "asset": { "type": "string" },
+      "amount": { "type": "string" },
+      "nonce": { "type": "number" },
+      "timestamp": { "type": "number" },
+      "expiry": { "type": "number" },
+      "signature": { "type": "string" }
+    },
+    "required": [
+      "protocol_version", "intent_type", "from_chain", "to_chain",
+      "sender", "receiver", "asset", "amount",
+      "nonce", "timestamp", "expiry", "signature"
+    ]
+  }

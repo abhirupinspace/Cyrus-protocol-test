@@ -1,9 +1,10 @@
+
+
 use anyhow::Result;
-use log::{info, error, warn};
+use log::{info, error};
 use serde::{Deserialize, Serialize};
-use serde_json;
 use std::time::Duration;
-use tokio::time::{interval, sleep};
+use tokio::time::sleep;
 
 // Simplified types for hackathon
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -168,7 +169,7 @@ impl SolanaListener {
         // 2. Parse settlement events from logs
         // 3. Convert to SettlementInstructions
         
-        // For hackathon demo, return empty vec
+        // For hackathon demo, returning empty vec
         // The demo will use manual settlement instructions
         vec![]
     }
@@ -179,7 +180,7 @@ async fn main() -> Result<()> {
     // Initialize logging
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     
-    info!("🚀 Cyrus Protocol Settlement Relayer");
+    info!("Cyrus Protocol Settlement Relayer");
     info!("=====================================");
     info!("");
 
