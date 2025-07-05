@@ -1,10 +1,16 @@
-use ed25519_dalek::{SigningKey, Signature, Signer};
-use rand::rngs::OsRng;
 use crate::types::intent::SettlementIntent;
-
-use sha2::Sha512;
+use ed25519_dalek::{Signature, SigningKey, Signer};
+use serde_json;
 
 pub fn sign_intent(intent: &SettlementIntent, signing_key: &SigningKey) -> Signature {
-    let intent_bytes = serde_json::to_vec(intent).expect("Failed to serialize intent");
-    signing_key.sign(&intent_bytes)
+    // Clone and strip signature to ensure a clean signing payload
+    let mut stripped_intent = intent.clone();
+    stripped_intent.signature = None;
+
+    // Serialize intent to bytes
+    let message_bytes = serde_json::to_vec(&stripped_intent)
+        .expect("Failed to serialize intent for signing");
+
+    // Sign and return signature
+    signing_key.sign(&message_bytes)
 }

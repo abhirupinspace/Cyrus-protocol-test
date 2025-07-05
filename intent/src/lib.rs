@@ -9,4 +9,3 @@ pub mod sign {
 pub mod verify {
     pub mod verify_intent;
 }
-

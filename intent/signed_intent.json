@@ -1,0 +1,14 @@
+{
+  "protocol_version": 1,
+  "intent_id": "intent-001",
+  "source_chain": "solana",
+  "destination_chain": "aptos",
+  "sender": "sender-address",
+  "receiver": "receiver-address",
+  "asset": "USDC",
+  "amount": 1000000,
+  "nonce": 42,
+  "timestamp": 1720123400,
+  "expiry": 1720126400,
+  "signature": "reMi2GMxTO2/fIqP+/BqM6nuiLkkZ32lIR7Mb4ghYqS0s6hVsPBaDrnbbM1Zt8ZtfEVcDSzkIN5GMPCOjtjWCA=="
+}
