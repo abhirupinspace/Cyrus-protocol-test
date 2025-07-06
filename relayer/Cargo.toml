@@ -44,3 +44,7 @@ base64 = "0.22.1"
 
 # Hex encoding/decoding  
 hex = "0.4"
+
+ed25519-dalek = "2.1"
+solana-client = "2.3.3" 
+solana-sdk = "2.3.1"
