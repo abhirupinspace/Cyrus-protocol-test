@@ -597,10 +597,10 @@ This project is licensed under the [Apache License 2.0](LICENSE).
 
 ## Support
 
-- **Documentation**: [docs.cyrusprotocol.com](https://docs.cyrusprotocol.com)
-- **Discord**: [discord.gg/cyrus](https://discord.gg/cyrus)
-- **Issues**: [GitHub Issues](https://github.com/cyrus-protocol/relayer/issues)
-- **Security**: security@cyrusprotocol.com
+- Abhirup Banerjee:
+email: abkenway2003@gmail.com
+tg: AbhirupBanerjee
+x: https://x.com/AbhirupTweetOn
 
 ## Security Considerations
 
