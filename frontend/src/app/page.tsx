@@ -220,16 +220,16 @@ const SettlementDemo: FC = () => {
       </span>
     );
   };
-
+//[#EEBA2B]
   return (
-    <div className="min-h-screen bg-gradient-to-b from-[#EEBA2B] to-zinc-50 font-sans">
+    <div className="min-h-screen bg-yellow-50 font-sans">
       {/* Header */}
-      <div className="bg-[#EEBA2B] shadow-sm">
+      <div className="bg-yellow-50 shadow-lg shadow-amber-100">
         <div className="max-w-6xl mx-auto px-4 py-4">
           <div className="flex justify-between items-center">
             <div>
               <h1 className="text-2xl font-bold text-gray-900">Cyrus Protocol</h1>
-              <p className="text-gray-600">Cross-Chain Settlement Demo</p>
+              <p className="text-gray-900">Cross-Chain Settlement Demo</p>
             </div>
             <div className="flex gap-2">
               <WalletMultiButton />
@@ -245,7 +245,7 @@ const SettlementDemo: FC = () => {
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
           
           {/* Settlement Controls */}
-          <div className="bg-[#FFF8E2] rounded-lg shadow-sm border p-6">
+          <div className="bg-[#FFF8E0] rounded-lg shadow-sm hover:shadow-md hover:shadow-yellow-200 border p-6">
             <h2 className="text-xl font-semibold mb-4 text-black">Settlement Configuration</h2>
             
             <div className="space-y-4">
